@@ -11,7 +11,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
 # Initialize bot
-bot = telebot.TeleBot("7970283325:AAFSQsyYzGgLEi9MMT1poXWmk781YV4y4eU")
+bot = telebot.TeleBot("7651135048:AAFHdEopM7pwsQxBeHfdgxplT9d5x1hsD1U")
 
 # Bot states
 START, CATEGORY, QUIZ, ANSWER, WALLET_DEPOSIT, WALLET_WITHDRAW = range(6)
@@ -265,7 +265,7 @@ def invite_command(message):
             }
         }
         save_users(users)
-    ref_link = f"https://t.me/Quizbestbaazi?start={user_id}"
+    ref_link = f"https://t.me/QuizBaaziZone?start={user_id}"
     bot.send_message(message.chat.id, f"🎁 Invite friends with this link to earn get bonus points:\n{ref_link}")
 
 @bot.message_handler(commands=['about'])
