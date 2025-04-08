@@ -4,8 +4,6 @@ import time
 from datetime import datetime
 import pandas as pd
 import threading
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
 
 # Initialize bot
 bot = telebot.TeleBot("7651135048:AAFHdEopM7pwsQxBeHfdgxplT9d5x1hsD1U")  # Replace with your token or use os.getenv('TELEGRAM_TOKEN')
@@ -19,27 +17,10 @@ UPI_ID = "yourupi@upi"  # Replace or use os.getenv('UPI_ID')
 # Global data
 users = {}
 
-# Google Sheets Setup
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly']
-SHEET_IDS = {
-    'quiz_questions': '10XQ8Un9NSNUpmYgXo8Q_eqfkxi3FW7OBc6MvRrocZIc',  # Replace with your Sheet ID
-    'users': '1HqoO_GHfsHr8XKyfyduwVjutzpp_3fJ7myLnXsD5pOE'                    # Replace with your Sheet ID
-}
-
-def get_sheets_service():
-    creds = service_account.Credentials.from_service_account_file('service-account.json', scopes=SCOPES)
-    return build('sheets', 'v4', credentials=creds)
-
-# Load questions from Google Sheets
+# Load questions from local Excel file
 def load_questions():
     try:
-        service = get_sheets_service()
-        sheet_id = SHEET_IDS['quiz_questions']
-        result = service.spreadsheets().values().get(spreadsheetId=sheet_id, range='Sheet1!A:J').execute()  # Adjust range if needed
-        rows = result.get('values', [])
-        if not rows:
-            raise Exception("No data in sheet")
-        # Parse rows into questions dictionary
+        df = pd.read_excel('quiz_questions.xlsx')
         questions = {
             'Quiz Zone': {
                 'Bihar Daroga': [[] for _ in range(20)],
@@ -63,32 +44,34 @@ def load_questions():
                 }
             }
         }
-        for row in rows[1:]:  # Skip header row
-            if len(row) < 10:  # Ensure row has all columns
-                continue
-            section, cat_subcat, set_num, q, opt1, opt2, opt3, opt4, ans, ref_note = row
-            ref_note = ref_note if ref_note else ''
-            set_num = int(set_num) - 1 if set_num else None
+        for _, row in df.iterrows():
+            section = row['Section']
+            ref_note = row['ReferenceNote'] if pd.notna(row['ReferenceNote']) else ''
             if section == 'Quiz Zone':
-                questions['Quiz Zone'][cat_subcat][set_num].append({
-                    'q': q,
-                    'options': [opt1, opt2, opt3, opt4],
-                    'ans': ans,
+                category = row['Category']
+                set_num = int(row['SetNumber']) - 1
+                questions['Quiz Zone'][category][set_num].append({
+                    'q': row['Question'],
+                    'options': [row['Option1'], row['Option2'], row['Option3'], row['Option4']],
+                    'ans': row['Answer'],
                     'ref_note': ref_note
                 })
             elif section == 'Question Bank':
-                if cat_subcat in ['Current Affairs', 'Maths', 'Reasoning', 'English']:
-                    questions['Question Bank'][cat_subcat].append({
-                        'q': q,
-                        'options': [opt1, opt2, opt3, opt4],
-                        'ans': ans,
+                subject = row['Subject']
+                if subject in ['Current Affairs', 'Maths', 'Reasoning', 'English']:
+                    questions['Question Bank'][subject].append({
+                        'q': row['Question'],
+                        'options': [row['Option1'], row['Option2'], row['Option3'], row['Option4']],
+                        'ans': row['Answer'],
                         'ref_note': ref_note
                     })
-                elif cat_subcat in questions['Question Bank']['GK/GS']:
-                    questions['Question Bank']['GK/GS'][cat_subcat][set_num].append({
-                        'q': q,
-                        'options': [opt1, opt2, opt3, opt4],
-                        'ans': ans,
+                elif subject == 'GK/GS':
+                    subcategory = row['SubCategory']
+                    set_num = int(row['SetNumber']) - 1
+                    questions['Question Bank']['GK/GS'][subcategory][set_num].append({
+                        'q': row['Question'],
+                        'options': [row['Option1'], row['Option2'], row['Option3'], row['Option4']],
+                        'ans': row['Answer'],
                         'ref_note': ref_note
                     })
         return questions
@@ -120,37 +103,30 @@ def load_questions():
 
 QUESTIONS = load_questions()
 
-# Load users from Google Sheets
+# Load users from local Excel file
 def load_users():
     global users
     try:
-        service = get_sheets_service()
-        sheet_id = SHEET_IDS['users']
-        result = service.spreadsheets().values().get(spreadsheetId=sheet_id, range='Sheet1!A:K').execute()  # Adjust range if needed
-        rows = result.get('values', [])
-        if not rows:
-            raise Exception("No data in sheet")
+        df = pd.read_excel('users.xlsx')
         users = {}
-        for row in rows[1:]:  # Skip header row
-            if len(row) < 11:  # Ensure row has all columns
-                continue
-            user_id, name, username, balance, transactions, dep_amount, dep_ref, dep_status, wd_amount, wd_upi, wd_status = row
+        for _, row in df.iterrows():
+            user_id = str(row['UserID'])
             users[user_id] = {
-                'name': name,
-                'username': username if username else '',
+                'name': row['Name'],
+                'username': row['Username'] if pd.notna(row['Username']) else '',
                 'wallet': {
-                    'balance': float(balance) if balance else 0,
-                    'transactions': transactions.split(';') if transactions else []
+                    'balance': row['Balance'],
+                    'transactions': row['Transactions'].split(';') if pd.notna(row['Transactions']) else []
                 },
                 'pending_deposit': {
-                    'amount': float(dep_amount) if dep_amount else 0,
-                    'ref_id': dep_ref if dep_ref else '',
-                    'status': dep_status if dep_status else 'Pending'
+                    'amount': row['PendingDepositAmount'] if pd.notna(row['PendingDepositAmount']) else 0,
+                    'ref_id': row['PendingDepositRefID'] if pd.notna(row['PendingDepositRefID']) else '',
+                    'status': row['PendingDepositStatus'] if pd.notna(row['PendingDepositStatus']) else 'Pending'
                 },
                 'pending_withdrawal': {
-                    'amount': float(wd_amount) if wd_amount else 0,
-                    'upi_id': wd_upi if wd_upi else '',
-                    'status': wd_status if wd_status else 'Pending'
+                    'amount': row['PendingWithdrawalAmount'] if pd.notna(row['PendingWithdrawalAmount']) else 0,
+                    'upi_id': row['PendingWithdrawalUPI'] if pd.notna(row['PendingWithdrawalUPI']) else '',
+                    'status': row['PendingWithdrawalStatus'] if pd.notna(row['PendingWithdrawalStatus']) else 'Pending'
                 },
                 'quiz_progress': {
                     'Quiz Zone': {'Bihar Daroga': {'free': 0, 'paid': 3}, 'Bihar Police': {'free': 0, 'paid': 3}, 'Railway': {'free': 0, 'paid': 3}},
@@ -162,7 +138,7 @@ def load_users():
         print(f"Error loading users: {e}")
         return {}
 
-# Save users (local for now, no real-time write-back)
+# Save users to local Excel file
 def save_users(users):
     df = pd.DataFrame(columns=['UserID', 'Name', 'Username', 'Balance', 'Transactions', 
                                'PendingDepositAmount', 'PendingDepositRefID', 'PendingDepositStatus',
@@ -215,7 +191,97 @@ def start(message):
     bot.send_message(message.chat.id, f"🎉 Welcome, {users[user_id]['name']}! Use /help for instructions.")
     show_main_menu(message.chat.id)
 
-# [Rest of your command handlers like /startquiz, /invite, etc., remain unchanged]
+@bot.message_handler(commands=['startquiz'])
+def start_quiz_command(message):
+    user_id = str(message.from_user.id)
+    users = load_users()
+    if user_id not in users:
+        users[user_id] = {
+            'name': message.from_user.first_name,
+            'username': message.from_user.username if message.from_user.username else '',
+            'wallet': {'balance': 0, 'transactions': []},
+            'pending_deposit': {'amount': 0, 'ref_id': '', 'status': 'Pending'},
+            'pending_withdrawal': {'amount': 0, 'upi_id': '', 'status': 'Pending'},
+            'quiz_progress': {
+                'Quiz Zone': {'Bihar Daroga': {'free': 0, 'paid': 3}, 'Bihar Police': {'free': 0, 'paid': 3}, 'Railway': {'free': 0, 'paid': 3}},
+                'Question Bank': {subject: 0 for subject in QUESTIONS['Question Bank'].keys()}
+            }
+        }
+        save_users(users)
+    show_quiz_categories(message.chat.id)
+
+@bot.message_handler(commands=['invite'])
+def invite_command(message):
+    user_id = str(message.from_user.id)
+    users = load_users()
+    if user_id not in users:
+        users[user_id] = {
+            'name': message.from_user.first_name,
+            'username': message.from_user.username if message.from_user.username else '',
+            'wallet': {'balance': 0, 'transactions': []},
+            'pending_deposit': {'amount': 0, 'ref_id': '', 'status': 'Pending'},
+            'pending_withdrawal': {'amount': 0, 'upi_id': '', 'status': 'Pending'},
+            'quiz_progress': {
+                'Quiz Zone': {'Bihar Daroga': {'free': 0, 'paid': 3}, 'Bihar Police': {'free': 0, 'paid': 3}, 'Railway': {'free': 0, 'paid': 3}},
+                'Question Bank': {subject: 0 for subject in QUESTIONS['Question Bank'].keys()}
+            }
+        }
+        save_users(users)
+    ref_link = f"https://t.me/QuizBaaziZone?start={user_id}"
+    bot.send_message(message.chat.id, f"🎁 Invite friends with this link to earn 100 bonus points:\n{ref_link}")
+
+@bot.message_handler(commands=['about'])
+def about_command(message):
+    about_text = (
+        "ℹ️ **About Quiz Bot**\n"
+        "Practice and test your skills:\n"
+        "- 🎯 Quiz Zone: Job-wise quizzes (some paid)\n"
+        "- 📚 Question Bank: Free subject-wise tests\n"
+        "Manage funds via /wallet. Start with /startquiz!"
+    )
+    bot.send_message(message.chat.id, about_text)
+
+@bot.message_handler(commands=['help'])
+def help_command(message):
+    help_text = (
+        "📋 **Quiz Bot Commands**\n"
+        "/start - Start the bot and view the welcome message\n"
+        "/startquiz - Begin a quiz from Quiz Zone\n"
+        "/invite - Get your referral link and earn bonus points\n"
+        "/about - Learn about the bot and how to play\n"
+        "/help - Get instructions on using the bot\n"
+        "/exit - Exit the quiz at any time\n"
+        "/profile - View your profile details\n"
+        "\n**How to Play**: Choose Quiz Zone or Question Bank!"
+    )
+    bot.send_message(message.chat.id, help_text)
+
+@bot.message_handler(commands=['exit'])
+def exit_command(message):
+    user_id = str(message.from_user.id)
+    users = load_users()
+    if user_id in users and 'quiz' in users[user_id]:
+        del users[user_id]['quiz']
+        bot.send_message(message.chat.id, "🏃 Quiz session exited!")
+    else:
+        bot.send_message(message.chat.id, "ℹ️ No active session to exit.")
+    show_main_menu(message.chat.id)
+
+@bot.message_handler(commands=['profile'])
+def profile_command(message):
+    user_id = str(message.from_user.id)
+    users = load_users()
+    if user_id not in users:
+        bot.send_message(message.chat.id, "❌ Please start the bot with /start first!")
+        return
+    user = users[user_id]
+    profile_text = (
+        f"👤 Profile\n"
+        f"Name: {user['name']}\n"
+        f"Username: @{user['username'] if user['username'] else 'Not set'}\n"
+        f"Wallet Balance: ₹{user['wallet']['balance']}"
+    )
+    bot.send_message(message.chat.id, profile_text)
 
 # Quiz Zone
 def show_quiz_categories(chat_id):
@@ -233,30 +299,6 @@ def show_quiz_categories(chat_id):
 @bot.callback_query_handler(func=lambda call: call.data == "quiz_zone")
 def quiz_zone(call):
     show_quiz_categories(call.message.chat.id)
-    bot.answer_callback_query(call.id)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("qz_category_"))
-def show_quiz_type(call):
-    user_id = str(call.from_user.id)
-    category = call.data.split("_")[2]
-    if user_id not in users:
-        users[user_id] = {
-            'name': call.from_user.first_name,
-            'username': call.from_user.username if call.from_user.username else '',
-            'wallet': {'balance': 0, 'transactions': []},
-            'pending_deposit': {'amount': 0, 'ref_id': '', 'status': 'Pending'},
-            'pending_withdrawal': {'amount': 0, 'upi_id': '', 'status': 'Pending'},
-            'quiz_progress': {
-                'Quiz Zone': {'Bihar Daroga': {'free': 0, 'paid': 3}, 'Bihar Police': {'free': 0, 'paid': 3}, 'Railway': {'free': 0, 'paid': 3}},
-                'Question Bank': {subject: 0 for subject in QUESTIONS['Question Bank'].keys()}
-            }
-        }
-        save_users(users)
-    markup = telebot.types.InlineKeyboardMarkup()
-    markup.add(telebot.types.InlineKeyboardButton("🆓 Free Quiz Set", callback_data=f"qz_free_{category}"),
-               telebot.types.InlineKeyboardButton("💸 Paid Quiz Set", callback_data=f"qz_paid_{category}"))
-    markup.add(telebot.types.InlineKeyboardButton("🔙 Back", callback_data="quiz_zone"))
-    bot.edit_message_text(f"🎯 Choose Quiz Type for {category}:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
     bot.answer_callback_query(call.id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("qz_category_"))
@@ -372,7 +414,7 @@ def show_question_sets(call):
     user_id = str(call.from_user.id)
     parts = call.data.split("_")
     subject, subcategory = parts[2], parts[3]
-    current_set = users[user_id]['quiz_progress']['Question Bank']['GK/GS']
+    current_set = users[user_id]['quiz_progress']['Question Bank'][subject]
     markup = telebot.types.InlineKeyboardMarkup()
     if current_set < 20:
         markup.add(telebot.types.InlineKeyboardButton(f"Question Set {current_set + 1}", callback_data=f"qb_set_{subject}_{subcategory}_{current_set + 1}"))
@@ -649,7 +691,7 @@ def back_to_main(call):
     show_main_menu(call.message.chat.id)
     bot.answer_callback_query(call.id)
 
-# Check Excel for updates
+# Check Excel updates (simplified for local file)
 def check_excel_updates():
     while True:
         users = load_users()
