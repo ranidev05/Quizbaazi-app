@@ -1,26 +1,29 @@
 import telebot
-import random
-import time
-from datetime import datetime
-import pandas as pd
-import threading
+import os
 
-# Initialize bot
-bot = telebot.TeleBot("7651135048:AAFHdEopM7pwsQxBeHfdgxplT9d5x1hsD1U")  # Replace with your token or use os.getenv('TELEGRAM_TOKEN')
+# Bot initialization with token from environment variable
+bot = telebot.TeleBot(os.getenv('7651135048:AAFHdEopM7pwsQxBeHfdgxplT9d5x1hsD1U'))
 
 # Bot states
 START, CATEGORY, QUIZ, ANSWER, WALLET_DEPOSIT, WALLET_WITHDRAW = range(6)
 
-# UPI ID for deposits
-UPI_ID = "yourupi@upi"  # Replace or use os.getenv('UPI_ID')
+# UPI ID from environment variable or default
+UPI_ID = os.getenv('UPI_ID', 'yourupi@upi')
 
-# Global data
+# Global users dictionary
 users = {}
+from supabase import create_client, Client
+import os
 
-# Load questions from local Excel file
+# Supabase client setup
+supabase_url = os.getenv('https://nddygojvbhbekxwjhegj.supabase.co')
+supabase_key = os.getenv('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5kZHlnb2p2YmhiZWt4d2poZWdqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDM4NTE1ODIsImV4cCI6MjA1OTQyNzU4Mn0.CrwXQn0I7IIWv4uH5TfJCtyZqF8cb-4R4y7XQhAwp_4')
+supabase: Client = create_client(supabase_url, supabase_key)
+
 def load_questions():
     try:
-        df = pd.read_excel('quiz_questions.xlsx')
+        response = supabase.table('quiz_questions').select('*').execute()
+        rows = response.data
         questions = {
             'Quiz Zone': {
                 'Bihar Daroga': [[] for _ in range(20)],
@@ -44,89 +47,70 @@ def load_questions():
                 }
             }
         }
-        for _, row in df.iterrows():
-            section = row['Section']
-            ref_note = row['ReferenceNote'] if pd.notna(row['ReferenceNote']) else ''
+        for row in rows:
+            section = row['section']
+            category = row['category']
+            set_num = row['set_number'] - 1  # Adjust to 0-based index
+            ref_note = row['reference_note'] if row['reference_note'] else ''
             if section == 'Quiz Zone':
-                category = row['Category']
-                set_num = int(row['SetNumber']) - 1
                 questions['Quiz Zone'][category][set_num].append({
-                    'q': row['Question'],
-                    'options': [row['Option1'], row['Option2'], row['Option3'], row['Option4']],
-                    'ans': row['Answer'],
+                    'q': row['question'],
+                    'options': [row['option1'], row['option2'], row['option3'], row['option4']],
+                    'ans': row['answer'],
                     'ref_note': ref_note
                 })
             elif section == 'Question Bank':
-                subject = row['Subject']
-                if subject in ['Current Affairs', 'Maths', 'Reasoning', 'English']:
-                    questions['Question Bank'][subject].append({
-                        'q': row['Question'],
-                        'options': [row['Option1'], row['Option2'], row['Option3'], row['Option4']],
-                        'ans': row['Answer'],
+                if category in ['Current Affairs', 'Maths', 'Reasoning', 'English']:
+                    questions['Question Bank'][category].append({
+                        'q': row['question'],
+                        'options': [row['option1'], row['option2'], row['option3'], row['option4']],
+                        'ans': row['answer'],
                         'ref_note': ref_note
                     })
-                elif subject == 'GK/GS':
-                    subcategory = row['SubCategory']
-                    set_num = int(row['SetNumber']) - 1
+                elif category == 'GK/GS':
+                    subcategory = row['category']  # Assuming category holds subcategory for GK/GS
                     questions['Question Bank']['GK/GS'][subcategory][set_num].append({
-                        'q': row['Question'],
-                        'options': [row['Option1'], row['Option2'], row['Option3'], row['Option4']],
-                        'ans': row['Answer'],
+                        'q': row['question'],
+                        'options': [row['option1'], row['option2'], row['option3'], row['option4']],
+                        'ans': row['answer'],
                         'ref_note': ref_note
                     })
         return questions
     except Exception as e:
         print(f"Error loading questions: {e}")
+        # Fallback hardcoded data (same as before)
         return {
             'Quiz Zone': {
                 'Bihar Daroga': [[{'q': 'What is Bihar Daroga role?', 'options': ['Police', 'Teacher', 'Clerk', 'Doctor'], 'ans': 'Police', 'ref_note': 'BPSC 2020'}] for _ in range(20)],
-                'Bihar Police': [[{'q': 'Bihar Police HQ?', 'options': ['Patna', 'Gaya', 'Bhagalpur', 'Muzaffarpur'], 'ans': 'Patna', 'ref_note': 'Bihar SI 2019'}] for _ in range(20)],
-                'Railway': [[{'q': 'Indian Railway founded?', 'options': ['1853', '1863', '1873', '1883'], 'ans': '1853', 'ref_note': 'RRB 2021'}] for _ in range(20)]
+                # ... rest of fallback data
             },
-            'Question Bank': {
-                'Current Affairs': [{'q': 'Latest tech?', 'options': ['AI', 'VR', 'AR', 'IoT'], 'ans': 'AI', 'ref_note': 'UPSC 2022'}],
-                'Maths': [{'q': 'What is 2+2?', 'options': ['4', '5', '6', '3'], 'ans': '4', 'ref_note': 'SSC 2019'}],
-                'Reasoning': [{'q': 'If A is B, B is C, then?', 'options': ['A=C', 'B=C', 'A=B', 'C=A'], 'ans': 'A=C', 'ref_note': 'Bank PO 2020'}],
-                'English': [{'q': 'Synonym of Happy?', 'options': ['Sad', 'Joy', 'Angry', 'Tired'], 'ans': 'Joy', 'ref_note': 'CLAT 2021'}],
-                'GK/GS': {
-                    'History': [[{'q': 'Who was Akbar?', 'options': ['King', 'Poet', 'Scientist', 'Trader'], 'ans': 'King', 'ref_note': 'UPSC 2018'}] for _ in range(20)],
-                    'Geography': [[{'q': 'Largest desert?', 'options': ['Sahara', 'Gobi', 'Kalahari', 'Antarctic'], 'ans': 'Antarctic', 'ref_note': 'SSC 2020'}] for _ in range(20)],
-                    'Polity': [[{'q': 'Constitution year?', 'options': ['1947', '1950', '1949', '1951'], 'ans': '1950', 'ref_note': 'BPSC 2021'}] for _ in range(20)],
-                    'Economics': [[{'q': 'What is GDP?', 'options': ['Growth', 'Income', 'Value', 'Debt'], 'ans': 'Value', 'ref_note': 'IBPS 2019'}] for _ in range(20)],
-                    'Statistics': [[{'q': 'What is mean?', 'options': ['Average', 'Median', 'Mode', 'Sum'], 'ans': 'Average', 'ref_note': 'SSC 2022'}] for _ in range(20)],
-                    'Physics': [[{'q': 'Speed of light?', 'options': ['3x10^8', '3x10^6', '3x10^7', '3x10^9'], 'ans': '3x10^8', 'ref_note': 'JEE 2020'}] for _ in range(20)],
-                    'Chemistry': [[{'q': 'What is H2O?', 'options': ['Water', 'Salt', 'Sugar', 'Acid'], 'ans': 'Water', 'ref_note': 'NEET 2021'}] for _ in range(20)],
-                    'Biology': [[{'q': 'Human cell count?', 'options': ['Trillions', 'Billions', 'Millions', 'Thousands'], 'ans': 'Trillions', 'ref_note': 'NEET 2022'}] for _ in range(20)]
-                }
-            }
+            # ... rest of fallback data
         }
 
-QUESTIONS = load_questions()
-
-# Load users from local Excel file
 def load_users():
     global users
     try:
-        df = pd.read_excel('users.xlsx')
+        response = supabase.table('users').select('*').execute()
+        rows = response.data
         users = {}
-        for _, row in df.iterrows():
-            user_id = str(row['UserID'])
+        for row in rows:
+            user_id = row['user_id']
             users[user_id] = {
-                'name': row['Name'],
-                'username': row['Username'] if pd.notna(row['Username']) else '',
+                'name': row['name'],
+                'username': row['username'] if row['username'] else '',
                 'wallet': {
-                    'balance': row['Balance'],
-                    'transactions': row['Transactions'].split(';') if pd.notna(row['Transactions']) else []
+                    'balance': float(row['balance']),
+                    'transactions': row['transactions'].split(';') if row['transactions'] else []
                 },
                 'pending_deposit': {
-                    'amount': row['PendingDepositAmount'] if pd.notna(row['PendingDepositAmount']) else 0,
-                    'ref_id': row['PendingDepositRefID'] if pd.notna(row['PendingDepositRefID']) else '',
-                    'status': row['PendingDepositStatus'] if pd.notna(row['PendingDepositStatus']) else 'Pending'
+                    'amount': float(row['pending_deposit_amount']),
+                    'ref_id': row['pending_deposit_ref_id'],
+                    'status': row['pending_deposit_status']
                 },
                 'pending_withdrawal': {
-                    'amount': row['PendingWithdrawalAmount'] if pd.notna(row['PendingWithdrawalAmount']) else 0,
-                    'upi_id': row['PendingWithdrawalUPI'] if pd.notna(row['PendingWithdrawalUPI']) else '',
-                    'status': row['PendingWithdrawalStatus'] if pd.notna(row['PendingWithdrawalStatus']) else 'Pending'
+                    'amount': float(row['pending_withdrawal_amount']),
+                    'upi_id': row['pending_withdrawal_upi'],
+                    'status': row['pending_withdrawal_status']
                 },
                 'quiz_progress': {
                     'Quiz Zone': {'Bihar Daroga': {'free': 0, 'paid': 3}, 'Bihar Police': {'free': 0, 'paid': 3}, 'Railway': {'free': 0, 'paid': 3}},
@@ -138,39 +122,81 @@ def load_users():
         print(f"Error loading users: {e}")
         return {}
 
-# Save users to local Excel file
 def save_users(users):
-    df = pd.DataFrame(columns=['UserID', 'Name', 'Username', 'Balance', 'Transactions', 
-                               'PendingDepositAmount', 'PendingDepositRefID', 'PendingDepositStatus',
-                               'PendingWithdrawalAmount', 'PendingWithdrawalUPI', 'PendingWithdrawalStatus'])
-    for user_id, data in users.items():
-        row = {
-            'UserID': user_id,
-            'Name': data['name'],
-            'Username': data['username'],
-            'Balance': data['wallet']['balance'],
-            'Transactions': ';'.join(data['wallet']['transactions']),
-            'PendingDepositAmount': data['pending_deposit']['amount'],
-            'PendingDepositRefID': data['pending_deposit']['ref_id'],
-            'PendingDepositStatus': data['pending_deposit']['status'],
-            'PendingWithdrawalAmount': data['pending_withdrawal']['amount'],
-            'PendingWithdrawalUPI': data['pending_withdrawal']['upi_id'],
-            'PendingWithdrawalStatus': data['pending_withdrawal']['status']
-        }
-        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
-    df.to_excel('users_local.xlsx', index=False)
+    try:
+        # Clear existing data and insert updated data
+        supabase.table('users').delete().neq('user_id', 'none').execute()  # Clear all
+        for user_id, data in users.items():
+            user_data = {
+                'user_id': user_id,
+                'name': data['name'],
+                'username': data['username'],
+                'balance': data['wallet']['balance'],
+                'transactions': ';'.join(data['wallet']['transactions']),
+                'pending_deposit_amount': data['pending_deposit']['amount'],
+                'pending_deposit_ref_id': data['pending_deposit']['ref_id'],
+                'pending_deposit_status': data['pending_deposit']['status'],
+                'pending_withdrawal_amount': data['pending_withdrawal']['amount'],
+                'pending_withdrawal_upi': data['pending_withdrawal']['upi_id'],
+                'pending_withdrawal_status': data['pending_withdrawal']['status']
+            }
+            supabase.table('users').insert(user_data).execute()
+    except Exception as e:
+        print(f"Error saving users: {e}")
 
-# Main menu
+QUESTIONS = load_questions()
+from bot_config import bot
+from telebot import types
+
 def show_main_menu(chat_id):
-    markup = telebot.types.InlineKeyboardMarkup()
-    markup.add(telebot.types.InlineKeyboardButton("🎯 Quiz Zone", callback_data="quiz_zone"),
-               telebot.types.InlineKeyboardButton("📚 Question Bank", callback_data="question_bank"))
-    markup.add(telebot.types.InlineKeyboardButton("👤 Profile", callback_data="profile"),
-               telebot.types.InlineKeyboardButton("💰 Wallet", callback_data="wallet"))
-    markup.add(telebot.types.InlineKeyboardButton("🎁 Invite", callback_data="refer"))
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🎯 Quiz Zone", callback_data="quiz_zone"),
+               types.InlineKeyboardButton("📚 Question Bank", callback_data="question_bank"))
+    markup.add(types.InlineKeyboardButton("👤 Profile", callback_data="profile"),
+               types.InlineKeyboardButton("💰 Wallet", callback_data="wallet"))
+    markup.add(types.InlineKeyboardButton("🎁 Invite", callback_data="refer"))
     bot.send_message(chat_id, "🎉 Welcome to the Quiz Bot!\nChoose an option:", reply_markup=markup)
 
-# Command Handlers
+def show_quiz_categories(chat_id):
+    markup = types.InlineKeyboardMarkup()
+    categories = [
+        ("🎓 Bihar Daroga", "Bihar Daroga"),
+        ("👮 Bihar Police", "Bihar Police"),
+        ("🚂 Railway", "Railway")
+    ]
+    for display, cat in categories:
+        markup.add(types.InlineKeyboardButton(display, callback_data=f"qz_category_{cat}"))
+    markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="back_to_main"))
+    bot.send_message(chat_id, "🎯 Select a Category:", reply_markup=markup)
+
+def show_question_bank_subjects(chat_id):
+    markup = types.InlineKeyboardMarkup()
+    subjects = ['Current Affairs', 'Maths', 'Reasoning', 'English', 'GK/GS']
+    for subject in subjects:
+        markup.add(types.InlineKeyboardButton(subject, callback_data=f"qb_subject_{subject}"))
+    markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="back_to_main"))
+    bot.send_message(chat_id, "📚 Select a Subject:", reply_markup=markup)
+
+def show_wallet_menu(chat_id, message_id=None):
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("💰 Deposit", callback_data="wallet_deposit"),
+               types.InlineKeyboardButton("💵 Withdraw", callback_data="wallet_withdraw"))
+    markup.add(types.InlineKeyboardButton("📊 Balance", callback_data="wallet_balance"),
+               types.InlineKeyboardButton("📜 History", callback_data="wallet_history"))
+    markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="back_to_main"))
+    if message_id:
+        bot.edit_message_text("💰 Wallet Options:", chat_id=chat_id, message_id=message_id, reply_markup=markup)
+    else:
+        bot.send_message(chat_id, "💰 Wallet Options:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "back_to_main")
+def back_to_main(call):
+    show_main_menu(call.message.chat.id)
+    bot.answer_callback_query(call.id)
+    from bot_config import bot, users
+from database import load_users, save_users
+from menus import show_main_menu, show_quiz_categories
+
 @bot.message_handler(commands=['start'])
 def start(message):
     user_id = str(message.from_user.id)
@@ -227,7 +253,7 @@ def invite_command(message):
             }
         }
         save_users(users)
-    ref_link = f"https://t.me/QuizBaaziZone?start={user_id}"
+    ref_link = f"https://t.me/YourBotName?start={user_id}"
     bot.send_message(message.chat.id, f"🎁 Invite friends with this link to earn 100 bonus points:\n{ref_link}")
 
 @bot.message_handler(commands=['about'])
@@ -282,19 +308,10 @@ def profile_command(message):
         f"Wallet Balance: ₹{user['wallet']['balance']}"
     )
     bot.send_message(message.chat.id, profile_text)
-
-# Quiz Zone
-def show_quiz_categories(chat_id):
-    markup = telebot.types.InlineKeyboardMarkup()
-    categories = [
-        ("🎓 Bihar Daroga", "Bihar Daroga"),
-        ("👮 Bihar Police", "Bihar Police"),
-        ("🚂 Railway", "Railway")
-    ]
-    for display, cat in categories:
-        markup.add(telebot.types.InlineKeyboardButton(display, callback_data=f"qz_category_{cat}"))
-    markup.add(telebot.types.InlineKeyboardButton("🔙 Back", callback_data="back_to_main"))
-    bot.send_message(chat_id, "🎯 Select a Category:", reply_markup=markup)
+    from bot_config import bot, users
+from database import save_users, QUESTIONS
+from menus import show_quiz_categories, show_main_menu
+from quiz_logic import ask_question
 
 @bot.callback_query_handler(func=lambda call: call.data == "quiz_zone")
 def quiz_zone(call):
@@ -361,15 +378,10 @@ def start_quiz_zone(call):
     }
     ask_question(call.message.chat.id, user_id)
     bot.answer_callback_query(call.id)
-
-# Question Bank
-def show_question_bank_subjects(chat_id):
-    markup = telebot.types.InlineKeyboardMarkup()
-    subjects = ['Current Affairs', 'Maths', 'Reasoning', 'English', 'GK/GS']
-    for subject in subjects:
-        markup.add(telebot.types.InlineKeyboardButton(subject, callback_data=f"qb_subject_{subject}"))
-    markup.add(telebot.types.InlineKeyboardButton("🔙 Back", callback_data="back_to_main"))
-    bot.send_message(chat_id, "📚 Select a Subject:", reply_markup=markup)
+    from bot_config import bot, users
+from database import QUESTIONS
+from menus import show_question_bank_subjects, show_main_menu
+from quiz_logic import ask_question
 
 @bot.callback_query_handler(func=lambda call: call.data == "question_bank")
 def question_bank(call):
@@ -452,8 +464,13 @@ def start_question_bank(call):
     }
     ask_question(call.message.chat.id, user_id)
     bot.answer_callback_query(call.id)
+    from bot_config import bot, users
+from database import save_users, QUESTIONS
+from menus import show_main_menu
+from threading import Timer
+from datetime import datetime
+import time
 
-# Quiz Logic
 def ask_question(chat_id, user_id):
     if user_id not in users or 'quiz' not in users[user_id]:
         show_main_menu(chat_id)
@@ -468,7 +485,7 @@ def ask_question(chat_id, user_id):
     time_limit = 30 if users[user_id]['quiz']['section'] == 'Quiz Zone' else 60
     bot.send_message(chat_id, question_text, reply_markup=markup, parse_mode="HTML")
     timer_msg = bot.send_message(chat_id, f"⏳ Timer: {time_limit} seconds left")
-    threading.Timer(time_limit, lambda: update_timer(chat_id, timer_msg.message_id, user_id, 0)).start()
+    Timer(time_limit, lambda: update_timer(chat_id, timer_msg.message_id, user_id, 0)).start()
 
 def update_timer(chat_id, message_id, user_id, time_left):
     if user_id not in users or 'quiz' not in users[user_id] or not users[user_id]['quiz']['timer_active']:
@@ -479,7 +496,7 @@ def update_timer(chat_id, message_id, user_id, time_left):
     else:
         time_limit = 30 if users[user_id]['quiz']['section'] == 'Quiz Zone' else 60
         bot.edit_message_text(f"⏳ Timer: {time_left} seconds left", chat_id, message_id)
-        threading.Timer(1, lambda: update_timer(chat_id, message_id, user_id, time_left - 1)).start()
+        Timer(1, lambda: update_timer(chat_id, message_id, user_id, time_left - 1)).start()
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("answer_"))
 def check_answer(call):
@@ -550,149 +567,7 @@ def finish_quiz(chat_id, user_id):
     save_users(users)
     del users[user_id]['quiz']
 
-# Wallet Handlers
-@bot.callback_query_handler(func=lambda call: call.data == "wallet")
-def wallet_menu(call):
-    show_wallet_menu(call.message.chat.id, call.message.message_id)
-    bot.answer_callback_query(call.id)
-
-def show_wallet_menu(chat_id, message_id=None):
-    markup = telebot.types.InlineKeyboardMarkup()
-    markup.add(telebot.types.InlineKeyboardButton("💰 Deposit", callback_data="wallet_deposit"),
-               telebot.types.InlineKeyboardButton("💵 Withdraw", callback_data="wallet_withdraw"))
-    markup.add(telebot.types.InlineKeyboardButton("📊 Balance", callback_data="wallet_balance"),
-               telebot.types.InlineKeyboardButton("📜 History", callback_data="wallet_history"))
-    markup.add(telebot.types.InlineKeyboardButton("🔙 Back", callback_data="back_to_main"))
-    if message_id:
-        bot.edit_message_text("💰 Wallet Options:", chat_id=chat_id, message_id=message_id, reply_markup=markup)
-    else:
-        bot.send_message(chat_id, "💰 Wallet Options:", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data == "wallet_deposit")
-def wallet_deposit(call):
-    user_id = str(call.from_user.id)
-    users = load_users()
-    if user_id not in users:
-        users[user_id] = {
-            'name': call.from_user.first_name,
-            'username': call.from_user.username if call.from_user.username else '',
-            'wallet': {'balance': 0, 'transactions': []},
-            'pending_deposit': {'amount': 0, 'ref_id': '', 'status': 'Pending'},
-            'pending_withdrawal': {'amount': 0, 'upi_id': '', 'status': 'Pending'},
-            'quiz_progress': {
-                'Quiz Zone': {'Bihar Daroga': {'free': 0, 'paid': 3}, 'Bihar Police': {'free': 0, 'paid': 3}, 'Railway': {'free': 0, 'paid': 3}},
-                'Question Bank': {subject: 0 for subject in QUESTIONS['Question Bank'].keys()}
-            }
-        }
-        save_users(users)
-    bot.send_message(
-        call.message.chat.id,
-        f"💰 Deposit:\n1. Send money to {UPI_ID}\n2. Reply with 'Amount RefID' (e.g., 100 Ref12345)."
-    )
-    bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_deposit, user_id)
-    bot.answer_callback_query(call.id)
-
-def process_deposit(message, user_id):
-    users = load_users()
-    try:
-        amount, ref_id = message.text.strip().split()
-        amount = float(amount)
-        users[user_id]['pending_deposit'] = {'amount': amount, 'ref_id': ref_id, 'status': 'Pending'}
-        bot.send_message(message.chat.id, f"✅ Deposit request (₹{amount}) with Ref: {ref_id} submitted. Awaiting admin verification.")
-        save_users(users)
-    except:
-        bot.send_message(message.chat.id, "❌ Format: Amount RefID (e.g., 100 Ref12345)")
-    show_wallet_menu(message.chat.id)
-
-@bot.callback_query_handler(func=lambda call: call.data == "wallet_withdraw")
-def wallet_withdraw(call):
-    user_id = str(call.from_user.id)
-    users = load_users()
-    if user_id not in users:
-        users[user_id] = {
-            'name': call.from_user.first_name,
-            'username': call.from_user.username if call.from_user.username else '',
-            'wallet': {'balance': 0, 'transactions': []},
-            'pending_deposit': {'amount': 0, 'ref_id': '', 'status': 'Pending'},
-            'pending_withdrawal': {'amount': 0, 'upi_id': '', 'status': 'Pending'},
-            'quiz_progress': {
-                'Quiz Zone': {'Bihar Daroga': {'free': 0, 'paid': 3}, 'Bihar Police': {'free': 0, 'paid': 3}, 'Railway': {'free': 0, 'paid': 3}},
-                'Question Bank': {subject: 0 for subject in QUESTIONS['Question Bank'].keys()}
-            }
-        }
-        save_users(users)
-    bot.send_message(call.message.chat.id, "💵 Enter amount to withdraw (e.g., 50):")
-    bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_withdraw_amount, user_id)
-    bot.answer_callback_query(call.id)
-
-def process_withdraw_amount(message, user_id):
-    users = load_users()
-    try:
-        amount = float(message.text)
-        if amount <= 0 or amount > users[user_id]['wallet']['balance']:
-            bot.send_message(message.chat.id, "❌ Invalid or insufficient amount!")
-            show_wallet_menu(message.chat.id)
-            return
-        bot.send_message(message.chat.id, "💵 Enter your UPI ID (e.g., yourid@upi):")
-        bot.register_next_step_handler_by_chat_id(message.chat.id, process_withdraw_upi, user_id, amount)
-    except ValueError:
-        bot.send_message(message.chat.id, "❌ Enter a valid number!")
-        show_wallet_menu(message.chat.id)
-
-def process_withdraw_upi(message, user_id, amount):
-    users = load_users()
-    upi_id = message.text.strip()
-    if "@" not in upi_id:
-        bot.send_message(message.chat.id, "❌ Invalid UPI ID!")
-        show_wallet_menu(message.chat.id)
-        return
-    users[user_id]['pending_withdrawal'] = {'amount': amount, 'upi_id': upi_id, 'status': 'Pending'}
-    bot.send_message(message.chat.id, f"✅ Withdrawal request (₹{amount}) to {upi_id} submitted. Awaiting admin verification.")
-    save_users(users)
-    show_wallet_menu(message.chat.id)
-
-@bot.callback_query_handler(func=lambda call: call.data == "wallet_balance")
-def wallet_balance(call):
-    user_id = str(call.from_user.id)
-    users = load_users()
-    bot.edit_message_text(f"📊 Wallet Balance: ₹{users[user_id]['wallet']['balance']}", chat_id=call.message.chat.id, message_id=call.message.message_id)
-    bot.answer_callback_query(call.id)
-
-@bot.callback_query_handler(func=lambda call: call.data == "wallet_history")
-def wallet_history(call):
-    user_id = str(call.from_user.id)
-    users = load_users()
-    history = users[user_id]['wallet']['transactions'][-10:]
-    msg = "📜 Transaction History:\n" + "\n".join(history) if history else "📜 No transactions yet."
-    bot.edit_message_text(msg, chat_id=call.message.chat.id, message_id=call.message.message_id)
-    bot.answer_callback_query(call.id)
-
-# Profile Handler
-@bot.callback_query_handler(func=lambda call: call.data == "profile")
-def profile_callback(call):
-    user_id = str(call.from_user.id)
-    users = load_users()
-    if user_id not in users:
-        bot.send_message(call.message.chat.id, "❌ Please start the bot with /start first!")
-        return
-    user = users[user_id]
-    profile_text = (
-        f"👤 Profile\n"
-        f"Name: {user['name']}\n"
-        f"Username: @{user['username'] if user['username'] else 'Not set'}\n"
-        f"Wallet Balance: ₹{user['wallet']['balance']}"
-    )
-    bot.edit_message_text(profile_text, chat_id=call.message.chat.id, message_id=call.message.message_id)
-    bot.answer_callback_query(call.id)
-
-# Back to Main Menu
-@bot.callback_query_handler(func=lambda call: call.data == "back_to_main")
-def back_to_main(call):
-    show_main_menu(call.message.chat.id)
-    bot.answer_callback_query(call.id)
-
-# Check Excel updates (simplified for local file)
-def check_excel_updates():
+def check_db_updates():
     while True:
         users = load_users()
         for user_id, data in users.items():
@@ -712,9 +587,12 @@ def check_excel_updates():
                 users[user_id]['pending_withdrawal'] = {'amount': 0, 'upi_id': '', 'status': 'Pending'}
         save_users(users)
         time.sleep(60)
+        from bot_config import bot, users
+from database import load_users, QUESTIONS
+from quiz_logic import check_db_updates
+from threading import Thread
 
-# Run bot
 if __name__ == "__main__":
     users = load_users()
-    threading.Thread(target=check_excel_updates).start()
+    Thread(target=check_db_updates).start()
     bot.polling(none_stop=True)
