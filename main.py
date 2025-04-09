@@ -2,7 +2,10 @@ import telebot
 import os
 
 # Bot initialization with token from environment variable
-bot = telebot.TeleBot(os.getenv('7651135048:AAFHdEopM7pwsQxBeHfdgxplT9d5x1hsD1U'))
+TOKEN = os.getenv('7006338541:AAE2_y1jfT1iMEttOQzjM5XwfolW-VtoD8k')
+if not TOKEN:
+    raise ValueError("TELEGRAM_TOKEN environment variable is not set. Please set it in Railway.app.")
+bot = telebot.TeleBot(TOKEN)
 
 # Bot states
 START, CATEGORY, QUIZ, ANSWER, WALLET_DEPOSIT, WALLET_WITHDRAW = range(6)
