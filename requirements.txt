@@ -1,2 +1,5 @@
-pyTelegramBotAPI
-supabase
+# requirements.txt
+python-telegram-bot==20.4
+supabase==1.0.3
+python-dotenv==1.0.0
+asyncio==3.4.3
