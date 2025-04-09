@@ -1,3 +1,2 @@
-telebot
-pandas
-openpyxl
+pyTelegramBotAPI
+supabase
