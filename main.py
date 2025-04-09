@@ -1,601 +1,889 @@
-import telebot
+# main.py
 import os
-
-# Bot initialization with token from environment variable
-TOKEN = os.getenv('7006338541:AAE2_y1jfT1iMEttOQzjM5XwfolW-VtoD8k')
-if not TOKEN:
-    raise ValueError("TELEGRAM_TOKEN environment variable is not set. Please set it in Railway.app.")
-bot = telebot.TeleBot(TOKEN)
-
-# Bot states
-START, CATEGORY, QUIZ, ANSWER, WALLET_DEPOSIT, WALLET_WITHDRAW = range(6)
-
-# UPI ID from environment variable or default
-UPI_ID = os.getenv('UPI_ID', 'yourupi@upi')
-
-# Global users dictionary
-users = {}
+import logging
+import asyncio
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
+from telegram import (
+    Update, 
+    InlineKeyboardButton, 
+    InlineKeyboardMarkup,
+    Poll
+)
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    ConversationHandler,
+    MessageHandler,
+    filters
+)
 from supabase import create_client, Client
-import os
 
-# Supabase client setup
-supabase_url = os.getenv('https://nddygojvbhbekxwjhegj.supabase.co')
-supabase_key = os.getenv('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5kZHlnb2p2YmhiZWt4d2poZWdqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDM4NTE1ODIsImV4cCI6MjA1OTQyNzU4Mn0.CrwXQn0I7IIWv4uH5TfJCtyZqF8cb-4R4y7XQhAwp_4')
-supabase: Client = create_client(supabase_url, supabase_key)
+# Load environment variables
+load_dotenv()
 
-def load_questions():
-    try:
-        response = supabase.table('quiz_questions').select('*').execute()
-        rows = response.data
-        questions = {
-            'Quiz Zone': {
-                'Bihar Daroga': [[] for _ in range(20)],
-                'Bihar Police': [[] for _ in range(20)],
-                'Railway': [[] for _ in range(20)]
-            },
-            'Question Bank': {
-                'Current Affairs': [],
-                'Maths': [],
-                'Reasoning': [],
-                'English': [],
-                'GK/GS': {
-                    'History': [[] for _ in range(20)],
-                    'Geography': [[] for _ in range(20)],
-                    'Polity': [[] for _ in range(20)],
-                    'Economics': [[] for _ in range(20)],
-                    'Statistics': [[] for _ in range(20)],
-                    'Physics': [[] for _ in range(20)],
-                    'Chemistry': [[] for _ in range(20)],
-                    'Biology': [[] for _ in range(20)]
-                }
-            }
+# Configure logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# Supabase configuration
+SUPABASE_URL = os.getenv("https://nddygojvbhbekxwjhegj.supabase.co")
+SUPABASE_KEY = os.getenv("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5kZHlnb2p2YmhiZWt4d2poZWdqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDM4NTE1ODIsImV4cCI6MjA1OTQyNzU4Mn0.CrwXQn0I7IIWv4uH5TfJCtyZqF8cb-4R4y7XQhAwp_4v")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# Conversation states
+MAIN_MENU, QUIZ_ZONE, QUESTION_BANK, PROFILE, WALLET, QUIZ_SET, TAKING_QUIZ = range(7)
+
+# Define callback data patterns
+QUIZ_ZONE_CALLBACK = "quiz_zone"
+QUESTION_BANK_CALLBACK = "question_bank"
+PROFILE_CALLBACK = "profile"
+WALLET_CALLBACK = "wallet"
+INVITE_CALLBACK = "invite"
+CATEGORY_CALLBACK = "category_"
+SUBJECT_CALLBACK = "subject_"
+SET_CALLBACK = "set_"
+WALLET_DEPOSIT_CALLBACK = "wallet_deposit"
+WALLET_WITHDRAW_CALLBACK = "wallet_withdraw"
+WALLET_TRANSACTIONS_CALLBACK = "wallet_transactions"
+WALLET_BALANCE_CALLBACK = "wallet_balance"
+BACK_CALLBACK = "back_to_"
+
+# Helper functions for database operations
+async def get_or_create_user(user_data):
+    """Create user if not exists and return user data"""
+    telegram_id = str(user_data.id)
+    
+    # Check if user exists
+    user = supabase.table("users").select("*").eq("telegram_id", telegram_id).execute()
+    
+    if not user.data:
+        # Generate unique invite code
+        import uuid
+        invite_code = str(uuid.uuid4())[:8]
+        
+        # Create new user
+        new_user = {
+            "telegram_id": telegram_id,
+            "username": user_data.username,
+            "first_name": user_data.first_name,
+            "last_name": user_data.last_name,
+            "invite_code": invite_code
         }
-        for row in rows:
-            section = row['section']
-            category = row['category']
-            set_num = row['set_number'] - 1  # Adjust to 0-based index
-            ref_note = row['reference_note'] if row['reference_note'] else ''
-            if section == 'Quiz Zone':
-                questions['Quiz Zone'][category][set_num].append({
-                    'q': row['question'],
-                    'options': [row['option1'], row['option2'], row['option3'], row['option4']],
-                    'ans': row['answer'],
-                    'ref_note': ref_note
-                })
-            elif section == 'Question Bank':
-                if category in ['Current Affairs', 'Maths', 'Reasoning', 'English']:
-                    questions['Question Bank'][category].append({
-                        'q': row['question'],
-                        'options': [row['option1'], row['option2'], row['option3'], row['option4']],
-                        'ans': row['answer'],
-                        'ref_note': ref_note
-                    })
-                elif category == 'GK/GS':
-                    subcategory = row['category']  # Assuming category holds subcategory for GK/GS
-                    questions['Question Bank']['GK/GS'][subcategory][set_num].append({
-                        'q': row['question'],
-                        'options': [row['option1'], row['option2'], row['option3'], row['option4']],
-                        'ans': row['answer'],
-                        'ref_note': ref_note
-                    })
-        return questions
-    except Exception as e:
-        print(f"Error loading questions: {e}")
-        # Fallback hardcoded data (same as before)
-        return {
-            'Quiz Zone': {
-                'Bihar Daroga': [[{'q': 'What is Bihar Daroga role?', 'options': ['Police', 'Teacher', 'Clerk', 'Doctor'], 'ans': 'Police', 'ref_note': 'BPSC 2020'}] for _ in range(20)],
-                # ... rest of fallback data
-            },
-            # ... rest of fallback data
-        }
+        result = supabase.table("users").insert(new_user).execute()
+        return result.data[0]
+    
+    return user.data[0]
 
-def load_users():
-    global users
-    try:
-        response = supabase.table('users').select('*').execute()
-        rows = response.data
-        users = {}
-        for row in rows:
-            user_id = row['user_id']
-            users[user_id] = {
-                'name': row['name'],
-                'username': row['username'] if row['username'] else '',
-                'wallet': {
-                    'balance': float(row['balance']),
-                    'transactions': row['transactions'].split(';') if row['transactions'] else []
-                },
-                'pending_deposit': {
-                    'amount': float(row['pending_deposit_amount']),
-                    'ref_id': row['pending_deposit_ref_id'],
-                    'status': row['pending_deposit_status']
-                },
-                'pending_withdrawal': {
-                    'amount': float(row['pending_withdrawal_amount']),
-                    'upi_id': row['pending_withdrawal_upi'],
-                    'status': row['pending_withdrawal_status']
-                },
-                'quiz_progress': {
-                    'Quiz Zone': {'Bihar Daroga': {'free': 0, 'paid': 3}, 'Bihar Police': {'free': 0, 'paid': 3}, 'Railway': {'free': 0, 'paid': 3}},
-                    'Question Bank': {subject: 0 for subject in QUESTIONS['Question Bank'].keys()}
-                }
-            }
-        return users
-    except Exception as e:
-        print(f"Error loading users: {e}")
-        return {}
+async def get_quiz_categories():
+    """Get all quiz categories from database"""
+    result = supabase.table("quiz_categories").select("*").execute()
+    return result.data
 
-def save_users(users):
-    try:
-        # Clear existing data and insert updated data
-        supabase.table('users').delete().neq('user_id', 'none').execute()  # Clear all
-        for user_id, data in users.items():
-            user_data = {
-                'user_id': user_id,
-                'name': data['name'],
-                'username': data['username'],
-                'balance': data['wallet']['balance'],
-                'transactions': ';'.join(data['wallet']['transactions']),
-                'pending_deposit_amount': data['pending_deposit']['amount'],
-                'pending_deposit_ref_id': data['pending_deposit']['ref_id'],
-                'pending_deposit_status': data['pending_deposit']['status'],
-                'pending_withdrawal_amount': data['pending_withdrawal']['amount'],
-                'pending_withdrawal_upi': data['pending_withdrawal']['upi_id'],
-                'pending_withdrawal_status': data['pending_withdrawal']['status']
-            }
-            supabase.table('users').insert(user_data).execute()
-    except Exception as e:
-        print(f"Error saving users: {e}")
+async def get_quiz_subjects():
+    """Get all quiz subjects from database"""
+    result = supabase.table("quiz_subjects").select("*").execute()
+    return result.data
 
-QUESTIONS = load_questions()
-from bot_config import bot
-from telebot import types
+async def get_quiz_sets(category_id=None, subject_id=None):
+    """Get quiz sets based on category or subject"""
+    query = supabase.table("quiz_sets").select("*")
+    
+    if category_id:
+        query = query.eq("category_id", category_id)
+    if subject_id:
+        query = query.eq("subject_id", subject_id)
+        
+    result = query.execute()
+    return result.data
 
-def show_main_menu(chat_id):
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("🎯 Quiz Zone", callback_data="quiz_zone"),
-               types.InlineKeyboardButton("📚 Question Bank", callback_data="question_bank"))
-    markup.add(types.InlineKeyboardButton("👤 Profile", callback_data="profile"),
-               types.InlineKeyboardButton("💰 Wallet", callback_data="wallet"))
-    markup.add(types.InlineKeyboardButton("🎁 Invite", callback_data="refer"))
-    bot.send_message(chat_id, "🎉 Welcome to the Quiz Bot!\nChoose an option:", reply_markup=markup)
+async def get_questions_for_set(set_id):
+    """Get questions for a specific quiz set"""
+    result = supabase.table("questions").select("*").eq("quiz_set_id", set_id).execute()
+    return result.data
 
-def show_quiz_categories(chat_id):
-    markup = types.InlineKeyboardMarkup()
-    categories = [
-        ("🎓 Bihar Daroga", "Bihar Daroga"),
-        ("👮 Bihar Police", "Bihar Police"),
-        ("🚂 Railway", "Railway")
+async def save_quiz_attempt(user_id, quiz_set_id, total_questions, correct_answers, wrong_answers, total_time):
+    """Save the results of a quiz attempt"""
+    unattempted = total_questions - (correct_answers + wrong_answers)
+    
+    attempt_data = {
+        "user_id": user_id,
+        "quiz_set_id": quiz_set_id,
+        "total_questions": total_questions,
+        "correct_answers": correct_answers,
+        "wrong_answers": wrong_answers,
+        "unattempted": unattempted,
+        "total_time": total_time
+    }
+    
+    result = supabase.table("user_attempts").insert(attempt_data).execute()
+    return result.data[0]
+
+# Command handlers
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send a message when the command /start is issued."""
+    user = update.effective_user
+    
+    # Store user data in database
+    db_user = await get_or_create_user(user)
+    
+    # Create main menu keyboard
+    keyboard = [
+        [InlineKeyboardButton("Quiz Zone", callback_data=QUIZ_ZONE_CALLBACK)],
+        [InlineKeyboardButton("Question Bank", callback_data=QUESTION_BANK_CALLBACK)],
+        [InlineKeyboardButton("Profile", callback_data=PROFILE_CALLBACK)],
+        [InlineKeyboardButton("Wallet", callback_data=WALLET_CALLBACK)],
+        [InlineKeyboardButton("Invite", callback_data=INVITE_CALLBACK)]
     ]
-    for display, cat in categories:
-        markup.add(types.InlineKeyboardButton(display, callback_data=f"qz_category_{cat}"))
-    markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="back_to_main"))
-    bot.send_message(chat_id, "🎯 Select a Category:", reply_markup=markup)
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        f"Welcome {user.first_name} to the Government Exam Quiz Bot!\n\n"
+        "Please select an option from the menu below:",
+        reply_markup=reply_markup
+    )
+    
+    return MAIN_MENU
 
-def show_question_bank_subjects(chat_id):
-    markup = types.InlineKeyboardMarkup()
-    subjects = ['Current Affairs', 'Maths', 'Reasoning', 'English', 'GK/GS']
+# Callback query handlers
+async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle main menu button callbacks"""
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == QUIZ_ZONE_CALLBACK:
+        return await quiz_zone_handler(update, context)
+    elif query.data == QUESTION_BANK_CALLBACK:
+        return await question_bank_handler(update, context)
+    elif query.data == PROFILE_CALLBACK:
+        return await profile_handler(update, context)
+    elif query.data == WALLET_CALLBACK:
+        return await wallet_handler(update, context)
+    elif query.data == INVITE_CALLBACK:
+        return await invite_handler(update, context)
+    
+    return MAIN_MENU
+
+async def quiz_zone_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle quiz zone - show job categories"""
+    query = update.callback_query
+    
+    # Get all categories from database
+    categories = await get_quiz_categories()
+    
+    # Create keyboard with categories
+    keyboard = []
+    for category in categories:
+        keyboard.append([InlineKeyboardButton(
+            category["name"], 
+            callback_data=f"{CATEGORY_CALLBACK}{category['id']}"
+        )])
+    
+    # Add back button
+    keyboard.append([InlineKeyboardButton("Back to Main Menu", callback_data=f"{BACK_CALLBACK}main")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        text="Please select a job category:",
+        reply_markup=reply_markup
+    )
+    
+    return QUIZ_ZONE
+
+async def category_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle category selection - show quiz sets"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Extract category ID from callback data
+    category_id = int(query.data.replace(CATEGORY_CALLBACK, ""))
+    context.user_data["selected_category_id"] = category_id
+    
+    # Get quiz sets for this category
+    quiz_sets = await get_quiz_sets(category_id=category_id)
+    
+    # Create keyboard with sets
+    keyboard = []
+    for i, quiz_set in enumerate(quiz_sets):
+        if i % 2 == 0:
+            row = [InlineKeyboardButton(
+                quiz_set["name"], 
+                callback_data=f"{SET_CALLBACK}{quiz_set['id']}"
+            )]
+            if i + 1 < len(quiz_sets):
+                row.append(InlineKeyboardButton(
+                    quiz_sets[i+1]["name"], 
+                    callback_data=f"{SET_CALLBACK}{quiz_sets[i+1]['id']}"
+                ))
+            keyboard.append(row)
+    
+    # Add back button
+    keyboard.append([InlineKeyboardButton("Back to Categories", callback_data=f"{BACK_CALLBACK}categories")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        text="Please select a quiz set:",
+        reply_markup=reply_markup
+    )
+    
+    return QUIZ_SET
+
+async def question_bank_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle question bank - show subject categories"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Get all subjects from database
+    subjects = await get_quiz_subjects()
+    
+    # Create keyboard with subjects
+    keyboard = []
     for subject in subjects:
-        markup.add(types.InlineKeyboardButton(subject, callback_data=f"qb_subject_{subject}"))
-    markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="back_to_main"))
-    bot.send_message(chat_id, "📚 Select a Subject:", reply_markup=markup)
+        keyboard.append([InlineKeyboardButton(
+            subject["name"], 
+            callback_data=f"{SUBJECT_CALLBACK}{subject['id']}"
+        )])
+    
+    # Add back button
+    keyboard.append([InlineKeyboardButton("Back to Main Menu", callback_data=f"{BACK_CALLBACK}main")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        text="Please select a subject:",
+        reply_markup=reply_markup
+    )
+    
+    return QUESTION_BANK
 
-def show_wallet_menu(chat_id, message_id=None):
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("💰 Deposit", callback_data="wallet_deposit"),
-               types.InlineKeyboardButton("💵 Withdraw", callback_data="wallet_withdraw"))
-    markup.add(types.InlineKeyboardButton("📊 Balance", callback_data="wallet_balance"),
-               types.InlineKeyboardButton("📜 History", callback_data="wallet_history"))
-    markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="back_to_main"))
-    if message_id:
-        bot.edit_message_text("💰 Wallet Options:", chat_id=chat_id, message_id=message_id, reply_markup=markup)
+async def subject_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle subject selection - show quiz sets"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Extract subject ID from callback data
+    subject_id = int(query.data.replace(SUBJECT_CALLBACK, ""))
+    context.user_data["selected_subject_id"] = subject_id
+    
+    # Get quiz sets for this subject
+    quiz_sets = await get_quiz_sets(subject_id=subject_id)
+    
+    # Create keyboard with sets
+    keyboard = []
+    for i, quiz_set in enumerate(quiz_sets):
+        if i % 2 == 0:
+            row = [InlineKeyboardButton(
+                quiz_set["name"], 
+                callback_data=f"{SET_CALLBACK}{quiz_set['id']}"
+            )]
+            if i + 1 < len(quiz_sets):
+                row.append(InlineKeyboardButton(
+                    quiz_sets[i+1]["name"], 
+                    callback_data=f"{SET_CALLBACK}{quiz_sets[i+1]['id']}"
+                ))
+            keyboard.append(row)
+    
+    # Add back button
+    keyboard.append([InlineKeyboardButton("Back to Subjects", callback_data=f"{BACK_CALLBACK}subjects")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        text="Please select a quiz set:",
+        reply_markup=reply_markup
+    )
+    
+    return QUIZ_SET
+
+async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle profile button - show user profile"""
+    query = update.callback_query
+    await query.answer()
+    
+    user = update.effective_user
+    
+    # Get user data from database
+    result = supabase.table("users").select("*").eq("telegram_id", str(user.id)).execute()
+    db_user = result.data[0] if result.data else None
+    
+    if not db_user:
+        await query.edit_message_text(
+            text="Error: User profile not found. Please restart the bot with /start."
+        )
+        return MAIN_MENU
+    
+    # Get user's quiz stats
+    attempts_result = supabase.table("user_attempts").select("*").eq("user_id", db_user["id"]).execute()
+    total_attempts = len(attempts_result.data)
+    total_correct = sum(attempt["correct_answers"] for attempt in attempts_result.data) if attempts_result.data else 0
+    total_questions = sum(attempt["total_questions"] for attempt in attempts_result.data) if attempts_result.data else 0
+    
+    # Calculate accuracy
+    accuracy = (total_correct / total_questions * 100) if total_questions > 0 else 0
+    
+    # Create profile text
+    profile_text = f"📊 *User Profile*\n\n"
+    profile_text += f"*Name:* {db_user['first_name']} {db_user['last_name'] or ''}\n"
+    profile_text += f"*Username:* @{db_user['username'] or 'Not set'}\n"
+    profile_text += f"*Wallet Balance:* ₹{db_user['wallet_balance'] or 0:.2f}\n\n"
+    profile_text += f"*Quiz Statistics:*\n"
+    profile_text += f"• Total Attempts: {total_attempts}\n"
+    profile_text += f"• Questions Answered: {total_questions}\n"
+    profile_text += f"• Correct Answers: {total_correct}\n"
+    profile_text += f"• Accuracy: {accuracy:.1f}%\n"
+    
+    # Back button
+    keyboard = [[InlineKeyboardButton("Back to Main Menu", callback_data=f"{BACK_CALLBACK}main")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        text=profile_text,
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+    
+    return MAIN_MENU
+
+async def wallet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle wallet button - show wallet options"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Get user's wallet balance
+    user = update.effective_user
+    result = supabase.table("users").select("wallet_balance").eq("telegram_id", str(user.id)).execute()
+    wallet_balance = result.data[0]["wallet_balance"] if result.data else 0
+    
+    # Create wallet menu
+    keyboard = [
+        [InlineKeyboardButton("Deposit", callback_data=WALLET_DEPOSIT_CALLBACK)],
+        [InlineKeyboardButton("Withdraw", callback_data=WALLET_WITHDRAW_CALLBACK)],
+        [InlineKeyboardButton("Transactions", callback_data=WALLET_TRANSACTIONS_CALLBACK)],
+        [InlineKeyboardButton("Balance", callback_data=WALLET_BALANCE_CALLBACK)],
+        [InlineKeyboardButton("Back to Main Menu", callback_data=f"{BACK_CALLBACK}main")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        text=f"💰 *Wallet*\n\nCurrent Balance: ₹{wallet_balance:.2f}\n\nSelect an option:",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+    
+    return WALLET
+
+async def invite_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle invite button - show invite link"""
+    query = update.callback_query
+    await query.answer()
+    
+    user = update.effective_user
+    
+    # Get user's invite code
+    result = supabase.table("users").select("invite_code").eq("telegram_id", str(user.id)).execute()
+    invite_code = result.data[0]["invite_code"] if result.data else None
+    
+    if not invite_code:
+        await query.edit_message_text(
+            text="Error: Invite code not found. Please restart the bot with /start."
+        )
+        return MAIN_MENU
+    
+    # Create invite link
+    bot_username = (await context.bot.get_me()).username
+    invite_link = f"https://t.me/{bot_username}?start={invite_code}"
+    
+    # Back button
+    keyboard = [[InlineKeyboardButton("Back to Main Menu", callback_data=f"{BACK_CALLBACK}main")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        text=f"🔗 *Invite Friends*\n\nShare this link with your friends:\n\n`{invite_link}`\n\n"
+             f"When they join using your link, both of you will receive rewards!",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+    
+    return MAIN_MENU
+
+async def quiz_set_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle quiz set selection and start the quiz"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Extract quiz set ID from callback data
+    quiz_set_id = int(query.data.replace(SET_CALLBACK, ""))
+    context.user_data["selected_quiz_set_id"] = quiz_set_id
+    
+    # Get questions for this quiz set
+    questions = await get_questions_for_set(quiz_set_id)
+    
+    if not questions:
+        # No questions found
+        await query.edit_message_text(
+            text="No questions found for this quiz set. Please select another set."
+        )
+        return QUIZ_SET
+    
+    # Store questions in context
+    context.user_data["questions"] = questions
+    context.user_data["current_question_index"] = 0
+    context.user_data["correct_answers"] = 0
+    context.user_data["wrong_answers"] = 0
+    context.user_data["start_time"] = datetime.now()
+    context.user_data["answered_questions"] = []
+    
+    # Start the quiz
+    return await send_next_question(update, context)
+
+async def send_next_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send the next question to the user"""
+    # Check if this is a callback query or a direct call
+    if hasattr(update, 'callback_query'):
+        query = update.callback_query
+        message = query.message
     else:
-        bot.send_message(chat_id, "💰 Wallet Options:", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data == "back_to_main")
-def back_to_main(call):
-    show_main_menu(call.message.chat.id)
-    bot.answer_callback_query(call.id)
-    from bot_config import bot, users
-from database import load_users, save_users
-from menus import show_main_menu, show_quiz_categories
-
-@bot.message_handler(commands=['start'])
-def start(message):
-    user_id = str(message.from_user.id)
-    users = load_users()
-    if user_id not in users:
-        users[user_id] = {
-            'name': message.from_user.first_name,
-            'username': message.from_user.username if message.from_user.username else '',
-            'wallet': {'balance': 0, 'transactions': []},
-            'pending_deposit': {'amount': 0, 'ref_id': '', 'status': 'Pending'},
-            'pending_withdrawal': {'amount': 0, 'upi_id': '', 'status': 'Pending'},
-            'quiz_progress': {
-                'Quiz Zone': {'Bihar Daroga': {'free': 0, 'paid': 3}, 'Bihar Police': {'free': 0, 'paid': 3}, 'Railway': {'free': 0, 'paid': 3}},
-                'Question Bank': {subject: 0 for subject in QUESTIONS['Question Bank'].keys()}
-            }
-        }
-        save_users(users)
-    bot.send_message(message.chat.id, f"🎉 Welcome, {users[user_id]['name']}! Use /help for instructions.")
-    show_main_menu(message.chat.id)
-
-@bot.message_handler(commands=['startquiz'])
-def start_quiz_command(message):
-    user_id = str(message.from_user.id)
-    users = load_users()
-    if user_id not in users:
-        users[user_id] = {
-            'name': message.from_user.first_name,
-            'username': message.from_user.username if message.from_user.username else '',
-            'wallet': {'balance': 0, 'transactions': []},
-            'pending_deposit': {'amount': 0, 'ref_id': '', 'status': 'Pending'},
-            'pending_withdrawal': {'amount': 0, 'upi_id': '', 'status': 'Pending'},
-            'quiz_progress': {
-                'Quiz Zone': {'Bihar Daroga': {'free': 0, 'paid': 3}, 'Bihar Police': {'free': 0, 'paid': 3}, 'Railway': {'free': 0, 'paid': 3}},
-                'Question Bank': {subject: 0 for subject in QUESTIONS['Question Bank'].keys()}
-            }
-        }
-        save_users(users)
-    show_quiz_categories(message.chat.id)
-
-@bot.message_handler(commands=['invite'])
-def invite_command(message):
-    user_id = str(message.from_user.id)
-    users = load_users()
-    if user_id not in users:
-        users[user_id] = {
-            'name': message.from_user.first_name,
-            'username': message.from_user.username if message.from_user.username else '',
-            'wallet': {'balance': 0, 'transactions': []},
-            'pending_deposit': {'amount': 0, 'ref_id': '', 'status': 'Pending'},
-            'pending_withdrawal': {'amount': 0, 'upi_id': '', 'status': 'Pending'},
-            'quiz_progress': {
-                'Quiz Zone': {'Bihar Daroga': {'free': 0, 'paid': 3}, 'Bihar Police': {'free': 0, 'paid': 3}, 'Railway': {'free': 0, 'paid': 3}},
-                'Question Bank': {subject: 0 for subject in QUESTIONS['Question Bank'].keys()}
-            }
-        }
-        save_users(users)
-    ref_link = f"https://t.me/YourBotName?start={user_id}"
-    bot.send_message(message.chat.id, f"🎁 Invite friends with this link to earn 100 bonus points:\n{ref_link}")
-
-@bot.message_handler(commands=['about'])
-def about_command(message):
-    about_text = (
-        "ℹ️ **About Quiz Bot**\n"
-        "Practice and test your skills:\n"
-        "- 🎯 Quiz Zone: Job-wise quizzes (some paid)\n"
-        "- 📚 Question Bank: Free subject-wise tests\n"
-        "Manage funds via /wallet. Start with /startquiz!"
-    )
-    bot.send_message(message.chat.id, about_text)
-
-@bot.message_handler(commands=['help'])
-def help_command(message):
-    help_text = (
-        "📋 **Quiz Bot Commands**\n"
-        "/start - Start the bot and view the welcome message\n"
-        "/startquiz - Begin a quiz from Quiz Zone\n"
-        "/invite - Get your referral link and earn bonus points\n"
-        "/about - Learn about the bot and how to play\n"
-        "/help - Get instructions on using the bot\n"
-        "/exit - Exit the quiz at any time\n"
-        "/profile - View your profile details\n"
-        "\n**How to Play**: Choose Quiz Zone or Question Bank!"
-    )
-    bot.send_message(message.chat.id, help_text)
-
-@bot.message_handler(commands=['exit'])
-def exit_command(message):
-    user_id = str(message.from_user.id)
-    users = load_users()
-    if user_id in users and 'quiz' in users[user_id]:
-        del users[user_id]['quiz']
-        bot.send_message(message.chat.id, "🏃 Quiz session exited!")
-    else:
-        bot.send_message(message.chat.id, "ℹ️ No active session to exit.")
-    show_main_menu(message.chat.id)
-
-@bot.message_handler(commands=['profile'])
-def profile_command(message):
-    user_id = str(message.from_user.id)
-    users = load_users()
-    if user_id not in users:
-        bot.send_message(message.chat.id, "❌ Please start the bot with /start first!")
-        return
-    user = users[user_id]
-    profile_text = (
-        f"👤 Profile\n"
-        f"Name: {user['name']}\n"
-        f"Username: @{user['username'] if user['username'] else 'Not set'}\n"
-        f"Wallet Balance: ₹{user['wallet']['balance']}"
-    )
-    bot.send_message(message.chat.id, profile_text)
-    from bot_config import bot, users
-from database import save_users, QUESTIONS
-from menus import show_quiz_categories, show_main_menu
-from quiz_logic import ask_question
-
-@bot.callback_query_handler(func=lambda call: call.data == "quiz_zone")
-def quiz_zone(call):
-    show_quiz_categories(call.message.chat.id)
-    bot.answer_callback_query(call.id)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("qz_category_"))
-def show_quiz_type(call):
-    user_id = str(call.from_user.id)
-    category = call.data.split("_")[2]
-    if user_id not in users:
-        users[user_id] = {
-            'name': call.from_user.first_name,
-            'username': call.from_user.username if call.from_user.username else '',
-            'wallet': {'balance': 0, 'transactions': []},
-            'pending_deposit': {'amount': 0, 'ref_id': '', 'status': 'Pending'},
-            'pending_withdrawal': {'amount': 0, 'upi_id': '', 'status': 'Pending'},
-            'quiz_progress': {
-                'Quiz Zone': {'Bihar Daroga': {'free': 0, 'paid': 3}, 'Bihar Police': {'free': 0, 'paid': 3}, 'Railway': {'free': 0, 'paid': 3}},
-                'Question Bank': {subject: 0 for subject in QUESTIONS['Question Bank'].keys()}
-            }
-        }
-        save_users(users)
-    markup = telebot.types.InlineKeyboardMarkup()
-    markup.add(telebot.types.InlineKeyboardButton("🆓 Free Quiz Set", callback_data=f"qz_free_{category}"),
-               telebot.types.InlineKeyboardButton("💸 Paid Quiz Set", callback_data=f"qz_paid_{category}"))
-    markup.add(telebot.types.InlineKeyboardButton("🔙 Back", callback_data="quiz_zone"))
-    bot.edit_message_text(f"🎯 Choose Quiz Type for {category}:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
-    bot.answer_callback_query(call.id)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("qz_free_") or call.data.startswith("qz_paid_"))
-def start_quiz_zone(call):
-    user_id = str(call.from_user.id)
-    parts = call.data.split("_")
-    quiz_type, category = parts[1], parts[2]
-    progress = users[user_id]['quiz_progress']['Quiz Zone'][category]
-    current_set = progress['free'] if quiz_type == 'free' else progress['paid']
-    max_set = 2 if quiz_type == 'free' else 19
-    if current_set > max_set:
-        bot.send_message(call.message.chat.id, f"✅ You've completed all {quiz_type} sets for {category}!")
-        show_main_menu(call.message.chat.id)
-        return
-    cost = 0 if quiz_type == 'free' else 5
-    if cost > 0 and users[user_id]['wallet']['balance'] < cost:
-        bot.send_message(call.message.chat.id, "❌ Insufficient balance! Deposit via Wallet.")
-        show_main_menu(call.message.chat.id)
-        return
-    if cost > 0:
-        users[user_id]['wallet']['balance'] -= cost
-        users[user_id]['wallet']['transactions'].append(f"Quiz Set {current_set + 1} ({category}): -₹{cost} on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    questions = random.sample(QUESTIONS['Quiz Zone'][category][current_set], min(25, len(QUESTIONS['Quiz Zone'][category][current_set])))
-    users[user_id]['quiz'] = {
-        'section': 'Quiz Zone',
-        'category': category,
-        'quiz_type': quiz_type,
-        'current_set': current_set,
-        'questions': questions,
-        'current': 0,
-        'attempted': 0,
-        'correct': 0,
-        'wrong': 0,
-        'start_time': time.time(),
-        'timer_active': True
+        message = update.message
+    
+    questions = context.user_data["questions"]
+    current_index = context.user_data["current_question_index"]
+    
+    # Check if we're done with all questions
+    if current_index >= len(questions):
+        return await finish_quiz(update, context)
+    
+    # Get current question
+    question = questions[current_index]
+    
+    # Create options
+    options = [
+        question["option_a"],
+        question["option_b"],
+        question["option_c"],
+        question["option_d"]
+    ]
+    
+    # Create answer mapping (for checking correct answer later)
+    correct_option_map = {
+        "A": 0, "B": 1, "C": 2, "D": 3
     }
-    ask_question(call.message.chat.id, user_id)
-    bot.answer_callback_query(call.id)
-    from bot_config import bot, users
-from database import QUESTIONS
-from menus import show_question_bank_subjects, show_main_menu
-from quiz_logic import ask_question
-
-@bot.callback_query_handler(func=lambda call: call.data == "question_bank")
-def question_bank(call):
-    show_question_bank_subjects(call.message.chat.id)
-    bot.answer_callback_query(call.id)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("qb_subject_"))
-def handle_subject_selection(call):
-    user_id = str(call.from_user.id)
-    subject = call.data.split("_")[2]
-    if user_id not in users:
-        users[user_id] = {
-            'name': call.from_user.first_name,
-            'username': call.from_user.username if call.from_user.username else '',
-            'wallet': {'balance': 0, 'transactions': []},
-            'pending_deposit': {'amount': 0, 'ref_id': '', 'status': 'Pending'},
-            'pending_withdrawal': {'amount': 0, 'upi_id': '', 'status': 'Pending'},
-            'quiz_progress': {
-                'Quiz Zone': {'Bihar Daroga': {'free': 0, 'paid': 3}, 'Bihar Police': {'free': 0, 'paid': 3}, 'Railway': {'free': 0, 'paid': 3}},
-                'Question Bank': {subject: 0 for subject in QUESTIONS['Question Bank'].keys()}
-            }
-        }
-        save_users(users)
-    markup = telebot.types.InlineKeyboardMarkup()
-    if subject == 'GK/GS':
-        for subcat in QUESTIONS['Question Bank']['GK/GS'].keys():
-            markup.add(telebot.types.InlineKeyboardButton(subcat, callback_data=f"qb_subcat_{subject}_{subcat}"))
+    context.user_data["correct_option_index"] = correct_option_map[question["correct_option"]]
+    
+    # Create keyboard with options
+    keyboard = [
+        [InlineKeyboardButton("A", callback_data="answer_0"), 
+         InlineKeyboardButton("B", callback_data="answer_1")],
+        [InlineKeyboardButton("C", callback_data="answer_2"), 
+         InlineKeyboardButton("D", callback_data="answer_3")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Send question with options
+    question_text = f"Question {current_index + 1}/{len(questions)}\n\n{question['question_text']}\n\n"
+    question_text += f"A. {question['option_a']}\n"
+    question_text += f"B. {question['option_b']}\n"
+    question_text += f"C. {question['option_c']}\n"
+    question_text += f"D. {question['option_d']}\n\n"
+    question_text += "⏱️ You have 30 seconds to answer."
+    
+    # Store the question's start time
+    context.user_data["question_start_time"] = datetime.now()
+    
+    # Create timer for 30 seconds
+    async def question_timer(context: ContextTypes.DEFAULT_TYPE, chat_id, message_id):
+        await asyncio.sleep(30)
+        # Check if user has already answered
+        if "current_question_answered" not in context.user_data or not context.user_data["current_question_answered"]:
+            # Time's up, mark as unanswered
+            context.user_data["unanswered"] = context.user_data.get("unanswered", 0) + 1
+            
+            # Move to next question
+            context.user_data["current_question_index"] += 1
+            context.user_data["current_question_answered"] = False
+            
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=f"{question_text}\n\n⏱️ Time's up! Moving to the next question."
+            )
+            
+            # Send next question
+            await send_next_question(update, context)
+    
+    if hasattr(update, 'callback_query'):
+        # Edit existing message
+        await query.edit_message_text(text=question_text, reply_markup=reply_markup)
+        
+        # Schedule timer
+        asyncio.create_task(question_timer(context, query.message.chat_id, query.message.message_id))
     else:
-        current_set = users[user_id]['quiz_progress']['Question Bank'][subject]
-        if current_set < 20:
-            markup.add(telebot.types.InlineKeyboardButton(f"Question Set {current_set + 1}", callback_data=f"qb_set_{subject}_{current_set + 1}"))
-        else:
-            bot.send_message(call.message.chat.id, f"✅ You've completed all sets for {subject}!")
-            show_main_menu(call.message.chat.id)
-            return
-    markup.add(telebot.types.InlineKeyboardButton("🔙 Back", callback_data="question_bank"))
-    bot.edit_message_text(f"📚 Select an option for {subject}:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
-    bot.answer_callback_query(call.id)
+        # Send new message
+        sent_message = await message.reply_text(text=question_text, reply_markup=reply_markup)
+        
+        # Schedule timer
+        asyncio.create_task(question_timer(context, message.chat_id, sent_message.message_id))
+    
+    # Reset current question answered flag
+    context.user_data["current_question_answered"] = False
+    
+    return TAKING_QUIZ
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("qb_subcat_"))
-def show_question_sets(call):
-    user_id = str(call.from_user.id)
-    parts = call.data.split("_")
-    subject, subcategory = parts[2], parts[3]
-    current_set = users[user_id]['quiz_progress']['Question Bank'][subject]
-    markup = telebot.types.InlineKeyboardMarkup()
-    if current_set < 20:
-        markup.add(telebot.types.InlineKeyboardButton(f"Question Set {current_set + 1}", callback_data=f"qb_set_{subject}_{subcategory}_{current_set + 1}"))
+async def handle_quiz_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle user's answer to a quiz question"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Mark question as answered to prevent timer from processing it again
+    context.user_data["current_question_answered"] = True
+    
+    # Get selected option and correct option
+    selected_option = int(query.data.replace("answer_", ""))
+    correct_option = context.user_data["correct_option_index"]
+    
+    # Calculate time taken to answer
+    question_start_time = context.user_data["question_start_time"]
+    answer_time = datetime.now()
+    time_taken = (answer_time - question_start_time).total_seconds()
+    
+    # Check if answer is correct
+    is_correct = selected_option == correct_option
+    
+    if is_correct:
+        context.user_data["correct_answers"] += 1
+        result_text = "✅ Correct!"
     else:
-        bot.send_message(call.message.chat.id, f"✅ You've completed all sets for {subcategory}!")
-        show_main_menu(call.message.chat.id)
-        return
-    markup.add(telebot.types.InlineKeyboardButton("🔙 Back", callback_data=f"qb_subject_{subject}"))
-    bot.edit_message_text(f"📚 Select a Question Set for {subcategory}:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
-    bot.answer_callback_query(call.id)
+        context.user_data["wrong_answers"] += 1
+        result_text = f"❌ Wrong! The correct answer was {['A', 'B', 'C', 'D'][correct_option]}."
+    
+    # Get current question
+    questions = context.user_data["questions"]
+    current_index = context.user_data["current_question_index"]
+    question = questions[current_index]
+    
+    # Add answer details to list
+    context.user_data["answered_questions"].append({
+        "question": question["question_text"],
+        "user_answer": selected_option,
+        "correct_answer": correct_option,
+        "is_correct": is_correct,
+        "time_taken": time_taken
+    })
+    
+    # Update question index
+    context.user_data["current_question_index"] += 1
+    
+    # Create question text with result
+    question_text = f"Question {current_index + 1}/{len(questions)}\n\n{question['question_text']}\n\n"
+    question_text += f"A. {question['option_a']}\n"
+    question_text += f"B. {question['option_b']}\n"
+    question_text += f"C. {question['option_c']}\n"
+    question_text += f"D. {question['option_d']}\n\n"
+    question_text += f"{result_text}\n"
+    question_text += f"Time taken: {time_taken:.1f} seconds"
+    
+    if question["explanation"]:
+        question_text += f"\n\nExplanation: {question['explanation']}"
+    
+    # Show result for 2 seconds then move to next question
+    await query.edit_message_text(text=question_text)
+    
+    # Wait 2 seconds before showing next question
+    await asyncio.sleep(2)
+    
+    # Send next question
+    return await send_next_question(update, context)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("qb_set_"))
-def start_question_bank(call):
-    user_id = str(call.from_user.id)
-    parts = call.data.split("_")
-    subject = parts[2]
-    if subject == 'GK/GS':
-        subcategory, set_num = parts[3], int(parts[4]) - 1
-        questions = random.sample(QUESTIONS['Question Bank'][subject][subcategory][set_num], min(100, len(QUESTIONS['Question Bank'][subject][subcategory][set_num])))
+async def finish_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Finish the quiz and show results"""
+    if hasattr(update, 'callback_query'):
+        query = update.callback_query
+        chat_id = query.message.chat_id
     else:
-        set_num = int(parts[3]) - 1
-        questions = random.sample(QUESTIONS['Question Bank'][subject], min(100, len(QUESTIONS['Question Bank'][subject])))
-    users[user_id]['quiz'] = {
-        'section': 'Question Bank',
-        'subject': subject,
-        'subcategory': subcategory if subject == 'GK/GS' else None,
-        'current_set': set_num,
-        'questions': questions,
-        'current': 0,
-        'attempted': 0,
-        'correct': 0,
-        'wrong': 0,
-        'start_time': time.time(),
-        'timer_active': True
-    }
-    ask_question(call.message.chat.id, user_id)
-    bot.answer_callback_query(call.id)
-    from bot_config import bot, users
-from database import save_users, QUESTIONS
-from menus import show_main_menu
-from threading import Timer
-from datetime import datetime
-import time
-
-def ask_question(chat_id, user_id):
-    if user_id not in users or 'quiz' not in users[user_id]:
-        show_main_menu(chat_id)
-        return
-    q_data = users[user_id]['quiz']['questions'][users[user_id]['quiz']['current']]
-    question_text = f"❓ Q{users[user_id]['quiz']['current'] + 1}/{len(users[user_id]['quiz']['questions'])}: {q_data['q']}"
-    if q_data['ref_note']:
-        question_text += f"\n<b><font color=\"red\">Reference: {q_data['ref_note']}</font></b>"
-    markup = telebot.types.InlineKeyboardMarkup()
-    for opt in q_data['options']:
-        markup.add(telebot.types.InlineKeyboardButton(opt, callback_data=f"answer_{opt}"))
-    time_limit = 30 if users[user_id]['quiz']['section'] == 'Quiz Zone' else 60
-    bot.send_message(chat_id, question_text, reply_markup=markup, parse_mode="HTML")
-    timer_msg = bot.send_message(chat_id, f"⏳ Timer: {time_limit} seconds left")
-    Timer(time_limit, lambda: update_timer(chat_id, timer_msg.message_id, user_id, 0)).start()
-
-def update_timer(chat_id, message_id, user_id, time_left):
-    if user_id not in users or 'quiz' not in users[user_id] or not users[user_id]['quiz']['timer_active']:
-        return
-    if time_left <= 0:
-        bot.edit_message_text("⏰ Time's up!", chat_id, message_id)
-        next_question(chat_id, user_id, None)
+        chat_id = update.message.chat_id
+    
+    # Calculate quiz statistics
+    start_time = context.user_data["start_time"]
+    end_time = datetime.now()
+    total_time = (end_time - start_time).total_seconds()
+    
+    correct_answers = context.user_data["correct_answers"]
+    wrong_answers = context.user_data["wrong_answers"]
+    unanswered = context.user_data.get("unanswered", 0)
+    
+    total_questions = len(context.user_data["questions"])
+    accuracy = (correct_answers / total_questions) * 100 if total_questions > 0 else 0
+    
+    # Get user ID from database
+    user = update.effective_user
+    result = supabase.table("users").select("id").eq("telegram_id", str(user.id)).execute()
+    user_id = result.data[0]["id"] if result.data else None
+    
+    if user_id:
+        # Save quiz attempt to database
+        quiz_set_id = context.user_data["selected_quiz_set_id"]
+        await save_quiz_attempt(
+            user_id=user_id,
+            quiz_set_id=quiz_set_id,
+            total_questions=total_questions,
+            correct_answers=correct_answers,
+            wrong_answers=wrong_answers,
+            total_time=total_time
+        )
+    
+    # Create result text
+    result_text = "📊 *Quiz Results*\n\n"
+    result_text += f"Total Questions: {total_questions}\n"
+    result_text += f"Correct Answers: {correct_answers}\n"
+    result_text += f"Wrong Answers: {wrong_answers}\n"
+    result_text += f"Unanswered: {unanswered}\n"
+    result_text += f"Accuracy: {accuracy:.1f}%\n"
+    result_text += f"Total Time: {total_time:.1f} seconds\n\n"
+    
+    if accuracy >= 80:
+        result_text += "🌟 Excellent performance! Keep it up!"
+    elif accuracy >= 60:
+        result_text += "👍 Good job! There's still room for improvement."
     else:
-        time_limit = 30 if users[user_id]['quiz']['section'] == 'Quiz Zone' else 60
-        bot.edit_message_text(f"⏳ Timer: {time_left} seconds left", chat_id, message_id)
-        Timer(1, lambda: update_timer(chat_id, message_id, user_id, time_left - 1)).start()
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("answer_"))
-def check_answer(call):
-    user_id = str(call.from_user.id)
-    if user_id not in users or 'quiz' not in users[user_id]:
-        show_main_menu(call.message.chat.id)
-        return
-    users[user_id]['quiz']['timer_active'] = False
-    answer = call.data.split("_")[1]
-    q_data = users[user_id]['quiz']['questions'][users[user_id]['quiz']['current']]
-    users[user_id]['quiz']['attempted'] += 1
-    if answer == q_data['ans']:
-        users[user_id]['quiz']['correct'] += 1
+        result_text += "📚 Keep practicing! You'll improve with time."
+    
+    # Create detailed review of answers
+    answer_review = "\n\n*Detailed Review:*\n\n"
+    for i, answer in enumerate(context.user_data["answered_questions"]):
+        answer_review += f"Q{i+1}: {'✅' if answer['is_correct'] else '❌'} "
+        answer_review += f"({answer['time_taken']:.1f}s)\n"
+    
+    result_text += answer_review
+    
+    # Create keyboard with options to go back to main menu
+    keyboard = [
+        [InlineKeyboardButton("Return to Main Menu", callback_data=f"{BACK_CALLBACK}main")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if hasattr(update, 'callback_query'):
+        await query.edit_message_text(
+            text=result_text,
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
     else:
-        users[user_id]['quiz']['wrong'] += 1
-    if users[user_id]['quiz']['section'] == 'Question Bank':
-        bot.send_message(call.message.chat.id, "✅ Correct!" if answer == q_data['ans'] else f"❌ Wrong! Correct answer: {q_data['ans']}")
-    next_question(call.message.chat.id, user_id, call.message.message_id)
-    bot.answer_callback_query(call.id)
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=result_text,
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
+    
+    # Clear user data
+    for key in ["questions", "current_question_index", "correct_answers", 
+                "wrong_answers", "start_time", "answered_questions"]:
+        if key in context.user_data:
+            del context.user_data[key]
+    
+    return MAIN_MENU
 
-def next_question(chat_id, user_id, message_id):
-    users[user_id]['quiz']['current'] += 1
-    if users[user_id]['quiz']['current'] >= len(users[user_id]['quiz']['questions']):
-        finish_quiz(chat_id, user_id)
-    else:
-        ask_question(chat_id, user_id)
+async def back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle back button callbacks"""
+    query = update.callback_query
+    await query.answer()
+    
+    destination = query.data.replace(f"{BACK_CALLBACK}", "")
+    
+    if destination == "main":
+        # Go back to main menu
+        keyboard = [
+            [InlineKeyboardButton("Quiz Zone", callback_data=QUIZ_ZONE_CALLBACK)],
+            [InlineKeyboardButton("Question Bank", callback_data=QUESTION_BANK_CALLBACK)],
+            [InlineKeyboardButton("Profile", callback_data=PROFILE_CALLBACK)],
+            [InlineKeyboardButton("Wallet", callback_data=WALLET_CALLBACK)],
+            [InlineKeyboardButton("Invite", callback_data=INVITE_CALLBACK)]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            text="Please select an option from the menu below:",
+            reply_markup=reply_markup
+        )
+        
+        return MAIN_MENU
+        
+    elif destination == "categories":
+        # Go back to quiz categories
+        return await quiz_zone_handler(update, context)
+        
+    elif destination == "subjects":
+        # Go back to subjects
+        return await question_bank_handler(update, context)
+    
+    # Default - go back to main menu
+    return await start(update, context)
 
-def finish_quiz(chat_id, user_id):
-    total_time = int(time.time() - users[user_id]['quiz']['start_time']) // 60  # Minutes
-    review = (
-        f"📋 Quiz Review\n"
-        f"Total Questions: {len(users[user_id]['quiz']['questions'])}\n"
-        f"Attempted: {users[user_id]['quiz']['attempted']}\n"
-        f"Correct: {users[user_id]['quiz']['correct']}\n"
-        f"Wrong: {users[user_id]['quiz']['wrong']}\n"
-        f"Total Time Taken: {total_time} min"
+# Wallet-specific handlers
+async def wallet_deposit_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle wallet deposit option"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Here you would implement your payment gateway integration
+    # For this example, we'll just show a message
+    
+    keyboard = [[InlineKeyboardButton("Back to Wallet", callback_data=WALLET_CALLBACK)]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        text="💳 *Deposit Money*\n\n"
+             "To add money to your wallet, please use one of the following methods:\n\n"
+             "1. UPI: example@upi\n"
+             "2. Bank Transfer: Account details in next message\n\n"
+             "After payment, please share the transaction ID with us.",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
     )
-    bot.send_message(chat_id, review)
-    if users[user_id]['quiz']['section'] == 'Quiz Zone':
-        quiz_type = users[user_id]['quiz']['quiz_type']
-        category = users[user_id]['quiz']['category']
-        users[user_id]['quiz_progress']['Quiz Zone'][category][quiz_type] += 1
-        next_set = users[user_id]['quiz_progress']['Quiz Zone'][category][quiz_type]
-        max_set = 3 if quiz_type == 'free' else 20
-        if next_set < max_set:
-            cost = "Free" if quiz_type == 'free' else "₹5"
-            markup = telebot.types.InlineKeyboardMarkup()
-            markup.add(telebot.types.InlineKeyboardButton(f"Start Quiz Set {next_set + 1} ({cost})", callback_data=f"qz_{quiz_type}_{category}"))
-            markup.add(telebot.types.InlineKeyboardButton("🔙 Back", callback_data="quiz_zone"))
-            bot.send_message(chat_id, f"✅ Ready for the next set?", reply_markup=markup)
-        else:
-            bot.send_message(chat_id, f"✅ All {quiz_type} sets for {category} completed!")
-            show_main_menu(chat_id)
-    elif users[user_id]['quiz']['section'] == 'Question Bank':
-        subject = users[user_id]['quiz']['subject']
-        if subject == 'GK/GS':
-            subject = 'GK/GS'
-        users[user_id]['quiz_progress']['Question Bank'][subject] += 1
-        next_set = users[user_id]['quiz_progress']['Question Bank'][subject]
-        if next_set < 20:
-            markup = telebot.types.InlineKeyboardMarkup()
-            markup.add(telebot.types.InlineKeyboardButton(f"Start Question Set {next_set + 1}", callback_data=f"qb_set_{subject}_{next_set + 1}" if subject != 'GK/GS' else f"qb_subcat_{subject}_{users[user_id]['quiz']['subcategory']}"))
-            markup.add(telebot.types.InlineKeyboardButton("🔙 Back", callback_data="question_bank"))
-            bot.send_message(chat_id, f"✅ Ready for the next set?", reply_markup=markup)
-        else:
-            bot.send_message(chat_id, f"✅ All sets for {subject} completed!")
-            show_main_menu(chat_id)
-    save_users(users)
-    del users[user_id]['quiz']
+    
+    return WALLET
 
-def check_db_updates():
-    while True:
-        users = load_users()
-        for user_id, data in users.items():
-            if data['pending_deposit']['status'] == 'Success':
-                amount = data['pending_deposit']['amount']
-                ref_id = data['pending_deposit']['ref_id']
-                users[user_id]['wallet']['balance'] += amount
-                users[user_id]['wallet']['transactions'].append(f"Deposit Success: +₹{amount} (Ref: {ref_id}) on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-                bot.send_message(int(user_id), f"✅ Your deposit of ₹{amount} (Ref: {ref_id}) has been successfully verified!")
-                users[user_id]['pending_deposit'] = {'amount': 0, 'ref_id': '', 'status': 'Pending'}
-            if data['pending_withdrawal']['status'] == 'Success':
-                amount = data['pending_withdrawal']['amount']
-                upi_id = data['pending_withdrawal']['upi_id']
-                users[user_id]['wallet']['balance'] -= amount
-                users[user_id]['wallet']['transactions'].append(f"Withdrawal Success: -₹{amount} to {upi_id} on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-                bot.send_message(int(user_id), f"✅ Your withdrawal of ₹{amount} to {upi_id} has been successfully processed!")
-                users[user_id]['pending_withdrawal'] = {'amount': 0, 'upi_id': '', 'status': 'Pending'}
-        save_users(users)
-        time.sleep(60)
-        from bot_config import bot, users
-from database import load_users, QUESTIONS
-from quiz_logic import check_db_updates
-from threading import Thread
+async def wallet_withdraw_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle wallet withdraw option"""
+    query = update.callback_query
+    await query.answer()
+    
+    keyboard = [[InlineKeyboardButton("Back to Wallet", callback_data=WALLET_CALLBACK)]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        text="💸 *Withdraw Money*\n\n"
+             "To withdraw money from your wallet, please provide your:\n\n"
+             "1. UPI ID or Bank Account details\n"
+             "2. Amount to withdraw\n\n"
+             "We process withdrawals within 24-48 hours.",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+    
+    return WALLET
+
+async def wallet_transactions_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle wallet transactions option"""
+    query = update.callback_query
+    await query.answer()
+    
+    user = update.effective_user
+    
+    # Get user ID from database
+    user_result = supabase.table("users").select("id").eq("telegram_id", str(user.id)).execute()
+    user_id = user_result.data[0]["id"] if user_result.data else None
+    
+    if not user_id:
+        await query.edit_message_text(
+            text="Error: User not found. Please restart the bot with /start."
+        )
+        return WALLET
+    
+    # Get transactions from database
+    transactions_result = supabase.table("transactions").select("*").eq("user_id", user_id).order("created_at", desc=True).limit(10).execute()
+    transactions = transactions_result.data
+    
+    # Create transactions list
+    if not transactions:
+        transactions_text = "No transactions found."
+    else:
+        transactions_text = ""
+        for i, tx in enumerate(transactions, 1):
+            tx_date = datetime.fromisoformat(tx["created_at"].replace("Z", "+00:00")).strftime("%d-%m-%Y %H:%M")
+            transactions_text += f"{i}. {tx_date} - ₹{tx['amount']:.2f} - {tx['transaction_type'].capitalize()} - {tx['status'].capitalize()}\n"
+    
+    keyboard = [[InlineKeyboardButton("Back to Wallet", callback_data=WALLET_CALLBACK)]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        text=f"📝 *Recent Transactions*\n\n{transactions_text}",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+    
+    return WALLET
+
+async def wallet_balance_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle wallet balance option"""
+    query = update.callback_query
+    await query.answer()
+    
+    user = update.effective_user
+    
+    # Get user's wallet balance
+    result = supabase.table("users").select("wallet_balance").eq("telegram_id", str(user.id)).execute()
+    wallet_balance = result.data[0]["wallet_balance"] if result.data else 0
+    
+    keyboard = [[InlineKeyboardButton("Back to Wallet", callback_data=WALLET_CALLBACK)]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        text=f"💰 *Wallet Balance*\n\nYour current balance is: ₹{wallet_balance:.2f}",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+    
+    return WALLET
+
+def main():
+    """Run the bot."""
+    # Get token from environment
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    
+    # Create application
+    application = Application.builder().token(token).build()
+    
+    # Create conversation handler for main menu
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            MAIN_MENU: [
+                CallbackQueryHandler(main_menu_handler, pattern=f"^({QUIZ_ZONE_CALLBACK}|{QUESTION_BANK_CALLBACK}|{PROFILE_CALLBACK}|{WALLET_CALLBACK}|{INVITE_CALLBACK})$")
+            ],
+            QUIZ_ZONE: [
+                CallbackQueryHandler(category_handler, pattern=f"^{CATEGORY_CALLBACK}"),
+                CallbackQueryHandler(back_handler, pattern=f"^{BACK_CALLBACK}")
+            ],
+            QUESTION_BANK: [
+                CallbackQueryHandler(subject_handler, pattern=f"^{SUBJECT_CALLBACK}"),
+                CallbackQueryHandler(back_handler, pattern=f"^{BACK_CALLBACK}")
+            ],
+            QUIZ_SET: [
+                CallbackQueryHandler(quiz_set_handler, pattern=f"^{SET_CALLBACK}"),
+                CallbackQueryHandler(back_handler, pattern=f"^{BACK_CALLBACK}")
+            ],
+            TAKING_QUIZ: [
+                CallbackQueryHandler(handle_quiz_answer, pattern="^answer_")
+            ],
+            WALLET: [
+                CallbackQueryHandler(wallet_deposit_handler, pattern=f"^{WALLET_DEPOSIT_CALLBACK}$"),
+                CallbackQueryHandler(wallet_withdraw_handler, pattern=f"^{WALLET_WITHDRAW_CALLBACK}$"),
+                CallbackQueryHandler(wallet_transactions_handler, pattern=f"^{WALLET_TRANSACTIONS_CALLBACK}$"),
+                CallbackQueryHandler(wallet_balance_handler, pattern=f"^{WALLET_BALANCE_CALLBACK}$"),
+                CallbackQueryHandler(back_handler, pattern=f"^{BACK_CALLBACK}"),
+                CallbackQueryHandler(wallet_handler, pattern=f"^{WALLET_CALLBACK}$")
+            ],
+        },
+        fallbacks=[CommandHandler("start", start)],
+    )
+    
+    # Add conversation handler to application
+    application.add_handler(conv_handler)
+    
+    # Run the bot
+    application.run_polling()
 
 if __name__ == "__main__":
-    users = load_users()
-    Thread(target=check_db_updates).start()
-    bot.polling(none_stop=True)
+    main()
